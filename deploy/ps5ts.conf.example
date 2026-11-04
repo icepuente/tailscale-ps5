@@ -1,0 +1,14 @@
+# ps5ts settings. Copy to /data/ps5_tailscale/ps5ts.conf on the console
+# (for example over FTP). ps5ts will not start without it.
+# Lines are key = value; # starts a comment.
+
+# HTTPS proxy for Tailscale's TCP connections: tools/ts_proxy.py on a LAN
+# machine. Leave empty if the console can reach the internet directly.
+proxy = http://192.168.0.10:3130
+
+# Device name on the tailnet (also its MagicDNS name).
+hostname = ps5
+
+# Console ports to forward to the tailnet, comma-separated. 9021 is elfldr.
+# Port 80 is taken by the status page.
+forward = 9021

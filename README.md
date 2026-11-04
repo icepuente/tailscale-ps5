@@ -4,7 +4,7 @@ Puts a jailbroken PS5 on your [Tailscale](https://tailscale.com) tailnet as its 
 
 > **Status: working, early.** Tested on a PS5 on firmware 13.60, jailbroken with Y2JB, with payloads loaded by pldmgr and elfldr v0.26. Built with Go 1.27.3, Tailscale v1.104.5 and `golang.org/x/sys` v0.49.0. The node joins the tailnet, reconnects after restarts without a new login, and serves elfldr. One earlier run hung after a few minutes for unknown reasons; a heartbeat in the log is there to catch it if it happens again.
 
-[How it works](#how-it-works) · [Requirements](#requirements) · [Setup](#setup) · [Using it](#using-it) · [What had to change in Go](#what-had-to-change-in-go) · [Limitations](#limitations-and-known-issues) · [Layout](#layout)
+[Download](https://github.com/icepuente/tailscale-ps5/releases) · [How it works](#how-it-works) · [Requirements](#requirements) · [Setup](#setup) · [Using it](#using-it) · [What had to change in Go](#what-had-to-change-in-go) · [Limitations](#limitations-and-known-issues) · [Layout](#layout)
 
 ## Features
 
@@ -70,18 +70,21 @@ journalctl -u ts-proxy -f      # every request is logged as ALLOW / DENY / REFUS
 
 The unit runs the proxy as an unprivileged throwaway user with a read-only system. **On Proxmox, don't use port 3128:** Proxmox's own `spiceproxy` already listens there. The unit uses 3130. If a host firewall is active, allow the console to reach that port.
 
-### 2. Configure and build
+### 2. Write the config file
 
-Set your values at the top of [`ps5ts/main.go`](ps5ts/main.go):
+`ps5ts` reads its settings from **`/data/ps5_tailscale/ps5ts.conf`** on the console and will not start without it, so nothing network-specific is built into the binary. Copy [`deploy/ps5ts.conf.example`](deploy/ps5ts.conf.example) there, for example over FTP, and edit it:
 
-| Constant | Meaning | In this repo |
+| Key | Meaning | Default |
 | --- | --- | --- |
-| `proxy` | The proxy from step 1 | `http://192.168.0.164:3130` |
+| `proxy` | The proxy from step 1, as `http://host:port`. Leave empty to connect directly. | empty |
 | `hostname` | Tailnet device name | `ps5` |
-| `forwardPorts` | Console ports to forward | `9021` (elfldr) |
-| `stateDir`, `logPath` | Tailscale state and log on the console | `/data/ps5_tailscale/...` |
+| `forward` | Console ports to forward, comma-separated (not 80) | `9021` (elfldr) |
 
-Then build:
+If the file is missing or invalid, `ps5ts` logs why, prints an example, and exits. Its state and log live next to it, in `/data/ps5_tailscale/`.
+
+### 3. Build, or use the release
+
+The [release](https://github.com/icepuente/tailscale-ps5/releases) has `ps5ts.elf`, `stop_ps5ts.elf` and `hello.elf` ready to use. To build them yourself:
 
 ```powershell
 ./build.ps1 -Package ./ps5ts -DeadlineSeconds 0 -Sdk <path to ps5-payload-sdk> -Llvm <path to LLVM bin>
@@ -90,7 +93,7 @@ Then build:
 
 `build.ps1` builds the Go program for `freebsd/amd64` with the patches applied, wraps it in goshim, and writes `build/ps5ts.elf` (about 31 MB). `-DeadlineSeconds N` makes the payload exit after N seconds whatever happens, which is useful for test runs; `0` means it runs until the console reboots. The payload script builds `build/hello.elf`, a test payload, and `build/stop_ps5ts.elf`.
 
-### 3. First start and login
+### 4. First start and login
 
 ```powershell
 python tools/send.py build/ps5ts.elf --host <console LAN IP> --until "ps5ts: UP as" --timeout 600
@@ -98,7 +101,7 @@ python tools/send.py build/ps5ts.elf --host <console LAN IP> --until "ps5ts: UP 
 
 On the first start, the output shows a line like `========== LOGIN: open https://login.tailscale.com/a/... ==========`. Open it and approve the device. `send.py` disconnects once the node is up, and `ps5ts` keeps running. Later starts reuse the saved identity and come up in a few seconds without a link.
 
-### 4. Optional: start it automatically with pldmgr
+### 5. Optional: start it automatically with pldmgr
 
 In pldmgr's web page (`http://<console IP>:8084`): **Upload ELF Payload** → `build/ps5ts.elf`, switch on autoload, and move it to the end of the autoload sequence. It then starts with every jailbreak.
 
@@ -112,7 +115,7 @@ In pldmgr's web page (`http://<console IP>:8084`): **Upload ELF Payload** → `b
 | Stop it | `python tools/send.py build/stop_ps5ts.elf --host <console IP>`: asks `ps5ts` to exit, and kills it if it hasn't after 15 s |
 | Test the forward | `python tools/send.py build/hello.elf --host ps5` prints `hello from a payload, pid N` |
 
-Other console services, such as FTP: if a machine on your LAN already advertises the LAN as a Tailscale **subnet route**, everything on the console is reachable through it, including FTP in passive mode. Only single-connection protocols can be added to `forwardPorts` directly; FTP's passive mode hands out the console's LAN address and a second port.
+Other console services, such as FTP: if a machine on your LAN already advertises the LAN as a Tailscale **subnet route**, everything on the console is reachable through it, including FTP in passive mode. Only single-connection protocols can be added to `forward` in the config file; FTP's passive mode hands out the console's LAN address and a second port.
 
 Security: anything forwarded is reachable by every device your tailnet policy allows. Forwarding elfldr means those devices can run code on the console. With Tailscale's default allow-all policy, and only your own devices in the tailnet, that is usually acceptable. Otherwise, restrict the ports in your tailnet policy.
 
@@ -164,6 +167,7 @@ tools/send.py             send a payload to elfldr and stream its output (--unti
 tools/ts_proxy.py         the Tailscale-only CONNECT proxy
 tools/klog.py             record the console's kernel log from klogsrv (port 3232)
 deploy/pve/               systemd unit for the proxy
+deploy/ps5ts.conf.example the config file ps5ts requires on the console
 ```
 
 ## Credits and license

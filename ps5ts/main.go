@@ -1,10 +1,11 @@
-// Command ps5ts joins Alec's tailnet from a jailbroken PS5 using tsnet in
+// Command ps5ts joins a tailnet from a jailbroken PS5 using tsnet in
 // userspace networking mode, serves a status page on its own tailnet
-// address, and forwards selected console services (see forwardPorts).
+// address, and forwards selected console services.
 //
-// The router blocks the console's internet TCP on purpose, so control and
-// DERP connections go through tools/ts_proxy.py on pve (HTTPS_PROXY).
-// UDP is not blocked, so WireGuard traffic to peers goes direct.
+// Settings come from confPath, which must exist. If the console's internet
+// TCP is blocked, set proxy= to tools/ts_proxy.py on a LAN machine: control
+// and DERP connections then go through it (HTTPS_PROXY). WireGuard traffic
+// is UDP and is not proxied.
 //
 // It runs until the console reboots. Its log goes to logPath (and to the
 // sender's connection while that is open) and is served at http://ps5/log.
@@ -16,9 +17,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,9 +34,8 @@ import (
 )
 
 const (
-	proxy    = "http://192.168.0.164:3130" // ts_proxy.py on pve (3128 is Proxmox spiceproxy)
+	confPath = "/data/ps5_tailscale/ps5ts.conf"
 	stateDir = "/data/ps5_tailscale/state"
-	hostname = "ps5"
 	logPath  = "/data/ps5_tailscale/ps5ts.log"
 	// /system_tmp is cleared at every boot, so neither file can outlive the
 	// process across a reboot. Both are used by payloads/stop_ps5ts.c.
@@ -42,10 +45,74 @@ const (
 	logTail  = 256 << 10
 )
 
-// forwardPorts are console services reachable as ps5:<port> on the tailnet,
-// each forwarded to 127.0.0.1:<port> on the console.
-var forwardPorts = []int{
-	9021, // elfldr: payload in, payload output back on the same connection
+// config holds the settings from confPath.
+type config struct {
+	proxy    string // HTTPS proxy for Tailscale's TCP connections; empty: direct
+	hostname string // tailnet device name
+	ports    []int  // console ports reachable as <hostname>:<port> on the tailnet
+}
+
+const exampleConf = `# ps5ts settings. Lines are key = value; # starts a comment.
+# HTTPS proxy for Tailscale's TCP connections (tools/ts_proxy.py). Leave
+# empty if the console can reach the internet directly.
+proxy = http://192.168.0.10:3130
+# Device name on the tailnet.
+hostname = ps5
+# Console ports to forward, comma-separated. 9021 is elfldr.
+forward = 9021
+`
+
+// loadConfig reads confPath. The file is required, so that nothing
+// network-specific is built into the binary.
+func loadConfig() (config, error) {
+	cfg := config{hostname: "ps5", ports: []int{9021}}
+	b, err := os.ReadFile(confPath)
+	if err != nil {
+		return cfg, err
+	}
+	for n, line := range strings.Split(string(b), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return cfg, fmt.Errorf("line %d: expected key = value", n+1)
+		}
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		switch key {
+		case "proxy":
+			if value != "" {
+				if u, err := url.Parse(value); err != nil || u.Scheme != "http" || u.Host == "" {
+					return cfg, fmt.Errorf("line %d: proxy must look like http://host:port", n+1)
+				}
+			}
+			cfg.proxy = value
+		case "hostname":
+			if value == "" {
+				return cfg, fmt.Errorf("line %d: hostname is empty", n+1)
+			}
+			cfg.hostname = value
+		case "forward":
+			cfg.ports = nil
+			for _, f := range strings.Split(value, ",") {
+				if f = strings.TrimSpace(f); f == "" {
+					continue
+				}
+				p, err := strconv.Atoi(f)
+				if err != nil || p < 1 || p > 65535 || p == 80 {
+					return cfg, fmt.Errorf("line %d: bad port %q (1-65535, not 80)", n+1, f)
+				}
+				cfg.ports = append(cfg.ports, p)
+			}
+		default:
+			return cfg, fmt.Errorf("line %d: unknown key %q", n+1, key)
+		}
+	}
+	return cfg, nil
 }
 
 var started = time.Now()
@@ -106,8 +173,22 @@ func main() {
 	os.Remove(stopPath)
 	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
 	go watchStop()
-	say("ps5ts: Go %s %s/%s, pid %d, log %s, proxy %s", runtime.Version(), runtime.GOOS, runtime.GOARCH, os.Getpid(), logPath, proxy)
-	os.Setenv("HTTPS_PROXY", proxy)
+	cfg, err := loadConfig()
+	if err != nil {
+		say("ps5ts: config %s: %v", confPath, err)
+		say("ps5ts: create it, for example:\n%s", exampleConf)
+		os.Remove(pidPath)
+		os.Exit(1)
+	}
+	proxyText := cfg.proxy
+	if proxyText == "" {
+		proxyText = "none (direct)"
+	}
+	say("ps5ts: Go %s %s/%s, pid %d, log %s, proxy %s, hostname %s, forward %v",
+		runtime.Version(), runtime.GOOS, runtime.GOARCH, os.Getpid(), logPath, proxyText, cfg.hostname, cfg.ports)
+	if cfg.proxy != "" {
+		os.Setenv("HTTPS_PROXY", cfg.proxy)
+	}
 	// No log uploads to log.tailscale.io: less traffic leaving the console.
 	envknob.SetNoLogsNoSupport()
 
@@ -116,7 +197,7 @@ func main() {
 		os.Exit(1)
 	}
 	s := &tsnet.Server{
-		Hostname: hostname,
+		Hostname: cfg.hostname,
 		Dir:      stateDir,
 		// tsnet's own log is chatty: file only.
 		Logf: func(format string, args ...any) {
@@ -142,7 +223,7 @@ func main() {
 	say("ps5ts: UP as %s, tailnet IPs %v", st.Self.DNSName, st.TailscaleIPs)
 	go heartbeat()
 
-	for _, port := range forwardPorts {
+	for _, port := range cfg.ports {
 		if err := forward(s, port); err != nil {
 			say("ps5ts: forward %d: %v", port, err)
 			os.Exit(1)
@@ -154,7 +235,7 @@ func main() {
 		say("ps5ts: listen :80: %v", err)
 		os.Exit(1)
 	}
-	say("ps5ts: serving http://%s/ (status) and http://%s/log", hostname, hostname)
+	say("ps5ts: serving http://%s/ (status) and http://%s/log", cfg.hostname, cfg.hostname)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		say("ps5ts: HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
