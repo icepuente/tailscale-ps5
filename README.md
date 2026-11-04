@@ -58,7 +58,13 @@ Three problems had to be solved to get Go running on the console:
 
 ### 1. Run the proxy on a LAN machine
 
-Edit the `ExecStart` line in [`deploy/pve/ts-proxy.service`](deploy/pve/ts-proxy.service): set `--listen` to that machine's LAN address and `--allow-client` to the console's address. Then install it:
+Generate the systemd unit with your addresses (the proxy machine's LAN IP and the console's):
+
+```sh
+python tools/ps5ts_config.py proxy-unit --listen 192.168.0.10 --allow-client 192.168.0.20 -o ts-proxy.service
+```
+
+It fills in [`deploy/pve/ts-proxy.service`](deploy/pve/ts-proxy.service); `--port` changes the port (default 3130), and `--allow-client` can be repeated. Copy `ts-proxy.service` and `tools/ts_proxy.py` to the proxy machine and install them:
 
 ```sh
 mkdir -p /opt/ps5_tailscale
@@ -72,7 +78,14 @@ The unit runs the proxy as an unprivileged throwaway user with a read-only syste
 
 ### 2. Write the config file
 
-`ps5ts` reads its settings from **`/data/ps5_tailscale/ps5ts.conf`** on the console and will not start without it, so nothing network-specific is built into the binary. Copy [`deploy/ps5ts.conf.example`](deploy/ps5ts.conf.example) there, for example over FTP, and edit it:
+`ps5ts` reads its settings from **`/data/ps5_tailscale/ps5ts.conf`** on the console and will not start without it, so nothing network-specific is built into the binary. Write it with the helper, which uses the console's FTP server (port 2121 by default):
+
+```sh
+python tools/ps5ts_config.py console --host 192.168.0.20 --proxy http://192.168.0.10:3130
+python tools/ps5ts_config.py show --host 192.168.0.20        # check what is there
+```
+
+The helper checks the settings exactly as `ps5ts` does, keeps any previous file as `ps5ts.conf.bak`, and reads the new file back to verify it. `--dry-run` prints the file instead of writing it. Without FTP, copy [`deploy/ps5ts.conf.example`](deploy/ps5ts.conf.example) there by other means and edit it. The settings:
 
 | Key | Meaning | Default |
 | --- | --- | --- |
@@ -93,6 +106,8 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk   # where the SDK is installed
 ```
 
 The scripts find `clang`/`ld.lld` under their plain or versioned names (`clang-18`, ...); set `CLANG`, `LLD` or `GO` to override. On a fresh machine, `build.sh` downloads the patched `golang.org/x/sys` version itself.
+
+Tests (Linux or WSL, after one `build.sh -p ./ps5ts` so `build/modules` exists): `cd ps5ts && go test -run Config .` checks the config parser, including that it accepts what `tools/ps5ts_config.py` writes.
 
 On **Windows** (PowerShell):
 
@@ -175,6 +190,7 @@ module-patches/           patched golang.org/x/sys files (copied to build/module
 payloads/                 hello.c, stop_ps5ts.c and their build script
 tools/send.py             send a payload to elfldr and stream its output (--until to detach)
 tools/ts_proxy.py         the Tailscale-only CONNECT proxy
+tools/ps5ts_config.py     write ps5ts.conf to the console (FTP) and the proxy's systemd unit
 tools/klog.py             record the console's kernel log from klogsrv (port 3232)
 deploy/pve/               systemd unit for the proxy
 deploy/ps5ts.conf.example the config file ps5ts requires on the console

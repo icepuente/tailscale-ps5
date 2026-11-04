@@ -65,12 +65,18 @@ forward = 9021
 // loadConfig reads confPath. The file is required, so that nothing
 // network-specific is built into the binary.
 func loadConfig() (config, error) {
-	cfg := config{hostname: "ps5", ports: []int{9021}}
 	b, err := os.ReadFile(confPath)
 	if err != nil {
-		return cfg, err
+		return config{}, err
 	}
-	for n, line := range strings.Split(string(b), "\n") {
+	return parseConfig(string(b))
+}
+
+// parseConfig parses the key = value format of confPath. tools/ps5ts_config.py
+// writes it; config_test.go checks the two agree.
+func parseConfig(text string) (config, error) {
+	cfg := config{hostname: "ps5", ports: []int{9021}}
+	for n, line := range strings.Split(text, "\n") {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = line[:i]
 		}
