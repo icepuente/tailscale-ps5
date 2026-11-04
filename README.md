@@ -48,10 +48,10 @@ Three problems had to be solved to get Go running on the console:
 - **A jailbroken PS5 with an ELF loader** on port 9021 (elfldr). Tested on firmware 13.60 with Y2JB and pldmgr.
 - **A LAN machine for the proxy** that is always on and can reach the internet, with Python 3.8 or newer. Tested on a Proxmox host. It is not needed if your console is allowed to reach Tailscale's servers directly.
 - **A Tailscale account.**
-- **To build** (Windows, PowerShell; other systems need small changes to the scripts):
+- **To build**, on Linux (including WSL) or Windows:
   - [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) (tested with v0.43);
-  - LLVM with `clang` and `ld.lld` (tested with LLVM 19 from Visual Studio Build Tools);
-  - Go **1.27.3**. `build.ps1` uses `tools/go/` if present, otherwise `go` from PATH. The overlay patches are tied to this Go version.
+  - LLVM with `clang` and `ld.lld`: tested with LLVM 18 on Ubuntu 24.04 (WSL), and LLVM 19 from Visual Studio Build Tools on Windows;
+  - Go **1.27.3**, exactly: the overlay patches are copies of this version's files, and the build scripts refuse other versions. The scripts use a Go unpacked into `tools/go-linux/` (Linux) or `tools/go/` (Windows) if present, otherwise `go` from PATH.
   - Python 3, for the tools.
 
 ## Setup
@@ -84,14 +84,24 @@ If the file is missing or invalid, `ps5ts` logs why, prints an example, and exit
 
 ### 3. Build, or use the release
 
-The [release](https://github.com/icepuente/tailscale-ps5/releases) has `ps5ts.elf`, `stop_ps5ts.elf` and `hello.elf` ready to use. To build them yourself:
+The [release](https://github.com/icepuente/tailscale-ps5/releases) has `ps5ts.elf`, `stop_ps5ts.elf` and `hello.elf` ready to use. To build them yourself, on **Linux or WSL**:
+
+```sh
+export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk   # where the SDK is installed
+./build.sh -p ./ps5ts -d 0
+./payloads/build.sh
+```
+
+The scripts find `clang`/`ld.lld` under their plain or versioned names (`clang-18`, ...); set `CLANG`, `LLD` or `GO` to override. On a fresh machine, `build.sh` downloads the patched `golang.org/x/sys` version itself.
+
+On **Windows** (PowerShell):
 
 ```powershell
 ./build.ps1 -Package ./ps5ts -DeadlineSeconds 0 -Sdk <path to ps5-payload-sdk> -Llvm <path to LLVM bin>
 ./payloads/build.ps1 -Sdk <path to ps5-payload-sdk> -Llvm <path to LLVM bin>
 ```
 
-`build.ps1` builds the Go program for `freebsd/amd64` with the patches applied, wraps it in goshim, and writes `build/ps5ts.elf` (about 31 MB). `-DeadlineSeconds N` makes the payload exit after N seconds whatever happens, which is useful for test runs; `0` means it runs until the console reboots. The payload script builds `build/hello.elf`, a test payload, and `build/stop_ps5ts.elf`.
+Both build the Go program for `freebsd/amd64` with the patches applied, wrap it in goshim, and write `build/ps5ts.elf` (about 31 MB). The Go part is reproducible: built from the same commit, Linux (WSL, Ubuntu 24.04) and Windows produce a byte-identical Go executable; only the small C wrapper differs with the compiler version. Go embeds the git commit and its time, so builds from different commits differ in those bytes. A dead-man switch (`-d N` / `-DeadlineSeconds N`) makes the payload exit after N seconds whatever happens, which is useful for test runs; `0` means it runs until the console reboots. The payload scripts build `build/hello.elf`, a test payload, and `build/stop_ps5ts.elf`.
 
 ### 4. First start and login
 

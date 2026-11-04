@@ -1,5 +1,6 @@
 build/
 logs/
 tools/go/
+tools/go-linux/
 __pycache__/
 *.pyc
