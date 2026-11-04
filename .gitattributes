@@ -1,0 +1,3 @@
+# Keep LF everywhere: the proxy and systemd unit run on Linux, and the Go
+# patch files are overlays of LF originals.
+* text=auto eol=lf

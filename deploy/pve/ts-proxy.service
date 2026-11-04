@@ -1,0 +1,24 @@
+# Tailscale-only HTTPS proxy for the internet-blocked PS5 (ps5_tailscale).
+# Install: /opt/ps5_tailscale/ts_proxy.py and this file in /etc/systemd/system/.
+# Logs: journalctl -u ts-proxy
+# Port 3130: Proxmox's own spiceproxy already listens on 3128.
+
+[Unit]
+Description=Tailscale-only HTTPS proxy for the PS5 (ps5_tailscale)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u /opt/ps5_tailscale/ts_proxy.py --listen 192.168.0.164 --port 3130 --allow-client 192.168.0.134
+# Unprivileged throwaway user, read-only system, no home directories.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# Also covers starting before 192.168.0.164 is assigned.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
